@@ -50,6 +50,8 @@ Useful starting values:
 - `NYMPHS2D2_MODEL_ID=playgroundai/playground-v2.5-1024px-aesthetic`
 - `NYMPHS2D2_DEVICE=cuda`
 - `NYMPHS2D2_DTYPE=float16`
+- `NYMPHS2D2_MODEL_VARIANT=fp16`
+- `HF_HUB_DISABLE_XET=1`
 
 ## Installation
 
@@ -70,6 +72,26 @@ The repo intentionally does not pin `torch` directly because the correct wheel d
 ```bash
 source .venv/bin/activate
 python api_server.py --host 0.0.0.0 --port 8090
+```
+
+## Prefetch a Model
+
+For larger models, prefetch the snapshot into the shared Hugging Face cache before first use:
+
+```bash
+source .venv/bin/activate
+python scripts/prefetch_model.py
+```
+
+With the current default config, that resolves to the Playground model and uses a filtered SDXL fp16 profile. The script forces `HF_HUB_DISABLE_XET=1` unless `--allow-xet` is passed, because that matched the most reliable real-world download behavior on this machine.
+
+Useful examples:
+
+```bash
+python scripts/prefetch_model.py --dry-run
+python scripts/prefetch_model.py --profile full
+python scripts/prefetch_model.py --model-id stabilityai/stable-diffusion-xl-base-1.0 --variant fp16
+python scripts/prefetch_model.py --local-files-only
 ```
 
 ## Endpoints
