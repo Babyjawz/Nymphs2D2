@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import os
 import sys
 from pathlib import Path
@@ -137,9 +138,11 @@ def main() -> int:
 
     _prepare_environment(allow_xet=args.allow_xet)
 
+    import huggingface_hub
     from huggingface_hub import snapshot_download
 
     cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
+    supports_dry_run = "dry_run" in inspect.signature(snapshot_download).parameters
 
     print(f"model_id={args.model_id}")
     print(f"revision={args.revision or 'main'}")
@@ -149,18 +152,30 @@ def main() -> int:
     print(f"local_files_only={args.local_files_only}")
     print(f"dry_run={args.dry_run}")
     print(f"HF_HUB_DISABLE_XET={os.getenv('HF_HUB_DISABLE_XET', '0')}")
+    print(f"huggingface_hub={huggingface_hub.__version__}")
     sys.stdout.flush()
 
-    result = snapshot_download(
-        repo_id=args.model_id,
-        revision=args.revision,
-        cache_dir=str(cache_dir) if cache_dir else None,
-        token=args.token,
-        local_files_only=args.local_files_only,
-        allow_patterns=allow_patterns,
-        max_workers=args.max_workers,
-        dry_run=args.dry_run,
-    )
+    if args.dry_run and not supports_dry_run:
+        print(
+            "dry_run_requested_but_unsupported=true "
+            f"(huggingface_hub {huggingface_hub.__version__})"
+        )
+        return 2
+
+    snapshot_kwargs = {
+        "repo_id": args.model_id,
+        "revision": args.revision,
+        "cache_dir": str(cache_dir) if cache_dir else None,
+        "token": args.token,
+        "local_files_only": args.local_files_only,
+        "allow_patterns": allow_patterns,
+        "max_workers": args.max_workers,
+    }
+
+    if supports_dry_run:
+        snapshot_kwargs["dry_run"] = args.dry_run
+
+    result = snapshot_download(**snapshot_kwargs)
 
     if args.dry_run:
         print(f"dry_run_files={len(result)}")
