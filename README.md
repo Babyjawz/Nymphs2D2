@@ -71,6 +71,51 @@ Important note:
 
 - the current remake branch uses the latest `diffusers` source build because `Z-Image` support is not present in the older `0.35.1` build that was previously installed in this repo
 
+## Nunchaku Experiment
+
+The stock `Tongyi-MAI/Z-Image-Turbo` path in `.venv` is still heavy on this machine. A separate experimental path in `.venv-nunchaku` proved much more practical by using the quantized Nunchaku transformer with the same base model.
+
+Working local experiment on `RTX 4080 SUPER`:
+
+- transformer load: about `18.9s`
+- pipeline load: about `0.7s`
+- `1024x1024`, `8` steps inference: about `19.8s`
+- VRAM during denoise: about `1.3 GiB`
+
+Create the isolated env:
+
+```bash
+python3.11 -m venv .venv-nunchaku
+source .venv-nunchaku/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install torch==2.11.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu130
+pip install -r requirements.lock.txt
+pip install --no-deps --pre --index-url https://appmana.github.io/forks-nunchaku-stable-abi/cu130 nunchaku
+pip install --no-deps --force-reinstall diffusers==0.36.0
+```
+
+Prefetch the quantized `r32` weights:
+
+```bash
+CUDA_HOME=/usr/local/cuda-13.0 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH \
+HF_HUB_DISABLE_XET=1 \
+.venv-nunchaku/bin/python -c "from huggingface_hub import hf_hub_download; print(hf_hub_download(repo_id='nunchaku-ai/nunchaku-z-image-turbo', filename='svdq-int4_r32-z-image-turbo.safetensors', cache_dir='/home/nymphs3d/.cache/huggingface/hub'))"
+```
+
+Run the local smoke test:
+
+```bash
+CUDA_HOME=/usr/local/cuda-13.0 \
+PATH=/usr/local/cuda-13.0/bin:$PATH \
+LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH \
+HF_HUB_DISABLE_XET=1 \
+.venv-nunchaku/bin/python scripts/run_nunchaku_zimage_test.py
+```
+
+This is still an experiment, not yet the default `Nymphs2D2` runtime.
+
 ## Run
 
 ```bash
