@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import gc
+import os
 from threading import RLock
 
 import torch
 
 from config import Settings
+from nunchaku_compat import patch_zimage_transformer_forward
+
+
+def _experimental_nunchaku_img2img_enabled() -> bool:
+    raw = os.getenv("Z_IMAGE_NUNCHAKU_IMG2IMG") or os.getenv("NYMPHS2D2_NUNCHAKU_IMG2IMG")
+    return (raw or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ModelManager:
@@ -64,7 +71,9 @@ class ModelManager:
         return "nunchaku"
 
     def supports_img2img(self, requested_model_id: str | None = None) -> bool:
-        return self._resolve_runtime(requested_model_id or self.settings.default_model_id) != "nunchaku"
+        if self._resolve_runtime(requested_model_id or self.settings.default_model_id) != "nunchaku":
+            return True
+        return _experimental_nunchaku_img2img_enabled()
 
     def supported_modes(self, requested_model_id: str | None = None) -> list[str]:
         if self.supports_img2img(requested_model_id):
@@ -139,23 +148,34 @@ class ModelManager:
         )
         return rank_path, precision
 
+    def _load_nunchaku_transformer(self):
+        try:
+            from nunchaku import NunchakuZImageTransformer2DModel
+        except ImportError as exc:
+            raise RuntimeError("Nunchaku runtime dependencies are not installed in this environment.") from exc
+
+        patch_zimage_transformer_forward(NunchakuZImageTransformer2DModel)
+        rank_path, precision = self._nunchaku_rank_path()
+        dtype = self._resolve_nunchaku_dtype()
+        transformer = NunchakuZImageTransformer2DModel.from_pretrained(rank_path, torch_dtype=dtype)
+        return transformer, rank_path, precision, dtype
+
     def _load_txt2img_pipeline(self, model_id: str, runtime: str):
         if runtime == "nunchaku":
             try:
                 from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
-                from nunchaku import NunchakuZImageTransformer2DModel
             except ImportError as exc:
                 raise RuntimeError("Nunchaku runtime dependencies are not installed in this environment.") from exc
 
-            rank_path, precision = self._nunchaku_rank_path()
-            dtype = self._resolve_nunchaku_dtype()
-            transformer = NunchakuZImageTransformer2DModel.from_pretrained(rank_path, torch_dtype=dtype)
+            transformer, rank_path, precision, dtype = self._load_nunchaku_transformer()
             self._loaded_runtime_extra = {
                 "runtime": "nunchaku",
                 "nunchaku_rank": self.settings.nunchaku_rank,
                 "nunchaku_precision": precision,
                 "nunchaku_rank_path": rank_path,
                 "runtime_dtype": str(dtype).replace("torch.", ""),
+                "zimage_forward_shim": True,
+                "experimental_img2img": _experimental_nunchaku_img2img_enabled(),
             }
             return ZImagePipeline.from_pretrained(
                 model_id,
@@ -197,7 +217,40 @@ class ModelManager:
             return self._img2img
 
         if self._loaded_runtime == "nunchaku":
-            raise RuntimeError("Nunchaku runtime currently supports txt2img only in Nymphs2D2.")
+            if not _experimental_nunchaku_img2img_enabled():
+                raise RuntimeError(
+                    "Nunchaku img2img is experimental. Set Z_IMAGE_NUNCHAKU_IMG2IMG=1 to enable it."
+                )
+            if self._loaded_model_family != "zimage":
+                raise RuntimeError("Nunchaku img2img currently supports Z-Image models only.")
+
+            self._txt2img = None
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            try:
+                from diffusers import ZImageImg2ImgPipeline
+            except ImportError as exc:
+                raise RuntimeError(
+                    "Current diffusers build does not include Z-Image img2img support. "
+                    "Install a newer diffusers build before using Z-Image img2img."
+                ) from exc
+            transformer, rank_path, precision, dtype = self._load_nunchaku_transformer()
+            self._loaded_runtime_extra.update(
+                {
+                    "nunchaku_precision": precision,
+                    "nunchaku_rank_path": rank_path,
+                    "runtime_dtype": str(dtype).replace("torch.", ""),
+                    "experimental_img2img": True,
+                }
+            )
+            self._img2img = ZImageImg2ImgPipeline.from_pretrained(
+                self._loaded_model_id,
+                transformer=transformer,
+                **self._pipeline_kwargs(self._loaded_model_id, self._loaded_runtime or "nunchaku"),
+            )
+            self._img2img = self._prepare_pipeline(self._img2img, self._loaded_runtime or "nunchaku")
+            return self._img2img
 
         if self._loaded_model_family == "zimage":
             # Z-Image img2img uses a separate pipeline class. Drop the txt2img

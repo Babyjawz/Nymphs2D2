@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import traceback
 import uuid
 from io import BytesIO
 
@@ -53,6 +54,12 @@ def _decode_base64_image(raw: str) -> Image.Image:
         return image.convert("RGB")
     except Exception as exc:
         raise ValueError("Invalid base64 image payload.") from exc
+
+
+def _resize_init_image(image: Image.Image, width: int, height: int) -> Image.Image:
+    if image.size == (width, height):
+        return image
+    return image.resize((width, height), Image.Resampling.LANCZOS)
 
 
 def _normalize_request(payload: GenerateRequest) -> GenerateRequest:
@@ -115,6 +122,7 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
         )
     else:
         init_image = _decode_base64_image(payload.image or "")
+        init_image = _resize_init_image(init_image, payload.width, payload.height)
         progress_update(
             status="processing",
             stage="generating_image",
@@ -242,8 +250,10 @@ async def generate(payload: GenerateRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        progress_update(status="error", stage="failed", detail=str(exc))
-        raise HTTPException(status_code=500, detail="Image generation failed.") from exc
+        detail = str(exc) or exc.__class__.__name__
+        progress_update(status="error", stage="failed", detail=detail)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Image generation failed: {detail}") from exc
 
 
 def main():

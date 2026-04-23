@@ -144,8 +144,47 @@ def _format_patterns(patterns: list[str] | None) -> str:
     return ", ".join(patterns)
 
 
+def _is_zimage_turbo(model_id: str) -> bool:
+    return (model_id or "").strip().lower().endswith("/z-image-turbo")
+
+
+def _nunchaku_precisions(settings) -> list[str]:
+    precision = (settings.nunchaku_precision or "auto").strip().lower()
+    if precision == "auto":
+        return ["int4", "fp4"]
+    return [precision]
+
+
+def _nunchaku_filenames(settings) -> list[str]:
+    return [
+        f"svdq-{precision}_r{settings.nunchaku_rank}-z-image-turbo.safetensors"
+        for precision in _nunchaku_precisions(settings)
+    ]
+
+
+def _prefetch_nunchaku_weights(args, settings, cache_dir) -> None:
+    if settings.runtime != "nunchaku" or not _is_zimage_turbo(args.model_id):
+        return
+
+    from huggingface_hub import hf_hub_download
+
+    for filename in _nunchaku_filenames(settings):
+        print(f"nunchaku_weight={settings.nunchaku_model_repo}/{filename}", flush=True)
+        if args.dry_run:
+            continue
+        path = hf_hub_download(
+            repo_id=settings.nunchaku_model_repo,
+            filename=filename,
+            cache_dir=str(cache_dir) if cache_dir else None,
+            token=args.token,
+            local_files_only=args.local_files_only,
+        )
+        print(f"nunchaku_weight_path={path}", flush=True)
+
+
 def main() -> int:
     args = _parse_args()
+    settings = get_settings()
     profile = _resolve_profile(args.model_id, args.variant, args.profile)
     allow_patterns = PROFILE_PATTERNS.get(profile)
 
@@ -196,6 +235,8 @@ def main() -> int:
             print(f"- {getattr(entry, 'file_name', str(entry))}")
     else:
         print(f"snapshot_path={result}")
+
+    _prefetch_nunchaku_weights(args, settings, cache_dir)
 
     return 0
 

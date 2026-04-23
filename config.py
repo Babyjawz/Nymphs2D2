@@ -17,6 +17,14 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_first(*names: str, default: str | None = None) -> str | None:
+    for name in names:
+        raw = os.getenv(name)
+        if raw is not None and raw.strip() != "":
+            return raw
+    return default
+
+
 def _default_device() -> str:
     try:
         import torch
@@ -110,23 +118,30 @@ def get_settings() -> Settings:
 
     hf_cache_raw = os.getenv("NYMPHS3D_HF_CACHE_DIR")
     hf_cache_dir = Path(hf_cache_raw).expanduser() if hf_cache_raw else None
-    default_model_id = os.getenv("NYMPHS2D2_MODEL_ID", DEFAULT_MODEL_ID)
-    runtime = _normalize_runtime(os.getenv("Z_IMAGE_RUNTIME") or os.getenv("NYMPHS2D2_RUNTIME") or DEFAULT_RUNTIME)
+    default_model_id = _env_first("Z_IMAGE_MODEL_ID", "NYMPHS2D2_MODEL_ID", default=DEFAULT_MODEL_ID) or DEFAULT_MODEL_ID
+    runtime = _normalize_runtime(_env_first("Z_IMAGE_RUNTIME", "NYMPHS2D2_RUNTIME", default=DEFAULT_RUNTIME))
 
     return Settings(
         root_dir=root_dir,
         output_dir=output_dir,
         host=os.getenv("NYMPHS2D2_HOST", "0.0.0.0"),
-        port=int(os.getenv("NYMPHS2D2_PORT", "8090")),
+        port=int(_env_first("Z_IMAGE_PORT", "NYMPHS2D2_PORT", default="8090") or "8090"),
         default_model_id=default_model_id,
         runtime=runtime,
-        default_negative_prompt=os.getenv("NYMPHS2D2_DEFAULT_NEGATIVE_PROMPT", ""),
-        device=os.getenv("NYMPHS2D2_DEVICE", _default_device()),
-        dtype=os.getenv("NYMPHS2D2_DTYPE", _default_dtype_for_model(default_model_id)),
-        variant=os.getenv("NYMPHS2D2_MODEL_VARIANT") or _default_variant_for_model(default_model_id),
-        nunchaku_rank=int(os.getenv("NYMPHS2D2_NUNCHAKU_RANK", "32")),
-        nunchaku_precision=(os.getenv("NYMPHS2D2_NUNCHAKU_PRECISION", "auto") or "auto").strip().lower(),
-        nunchaku_model_repo=os.getenv("NYMPHS2D2_NUNCHAKU_MODEL_REPO", "nunchaku-ai/nunchaku-z-image-turbo"),
+        default_negative_prompt=_env_first("Z_IMAGE_DEFAULT_NEGATIVE_PROMPT", "NYMPHS2D2_DEFAULT_NEGATIVE_PROMPT", default="") or "",
+        device=_env_first("Z_IMAGE_DEVICE", "NYMPHS2D2_DEVICE", default=_default_device()) or _default_device(),
+        dtype=_env_first("Z_IMAGE_DTYPE", "NYMPHS2D2_DTYPE", default=_default_dtype_for_model(default_model_id)) or _default_dtype_for_model(default_model_id),
+        variant=_env_first("Z_IMAGE_MODEL_VARIANT", "NYMPHS2D2_MODEL_VARIANT") or _default_variant_for_model(default_model_id),
+        nunchaku_rank=int(_env_first("Z_IMAGE_NUNCHAKU_RANK", "NYMPHS2D2_NUNCHAKU_RANK", default="32") or "32"),
+        nunchaku_precision=(
+            _env_first("Z_IMAGE_NUNCHAKU_PRECISION", "NYMPHS2D2_NUNCHAKU_PRECISION", default="auto") or "auto"
+        ).strip().lower(),
+        nunchaku_model_repo=_env_first(
+            "Z_IMAGE_NUNCHAKU_MODEL_REPO",
+            "NYMPHS2D2_NUNCHAKU_MODEL_REPO",
+            default="nunchaku-ai/nunchaku-z-image-turbo",
+        )
+        or "nunchaku-ai/nunchaku-z-image-turbo",
         use_safetensors=_env_bool("NYMPHS2D2_USE_SAFETENSORS", True),
         hf_cache_dir=hf_cache_dir,
         hf_token=os.getenv("NYMPHS3D_HF_TOKEN") or None,

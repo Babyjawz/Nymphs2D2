@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from diffusers.pipelines.z_image.pipeline_z_image import ZImagePipeline
 from nunchaku import NunchakuZImageTransformer2DModel
+
+from nunchaku_compat import patch_zimage_transformer_forward
 
 
 DEFAULT_PROMPT = (
@@ -53,6 +58,8 @@ def main() -> None:
 
     print("loading transformer...")
     t0 = time.perf_counter()
+    patched_forward = patch_zimage_transformer_forward(NunchakuZImageTransformer2DModel)
+    print(f"zimage_forward_shim={patched_forward}")
     transformer = NunchakuZImageTransformer2DModel.from_pretrained(
         args.rank_path,
         torch_dtype=dtype,
