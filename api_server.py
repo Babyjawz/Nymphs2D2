@@ -5,6 +5,7 @@ import base64
 import traceback
 import uuid
 from io import BytesIO
+from time import perf_counter
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -39,6 +40,12 @@ app = FastAPI(
 )
 
 
+def _log_stage(message: str, **fields):
+    parts = [f"{key}={value}" for key, value in fields.items()]
+    suffix = f" {' '.join(parts)}" if parts else ""
+    print(f"[nymphs:zimage:stage] {message}{suffix}", flush=True)
+
+
 def _coerce_dimension(value: int, *, maximum: int, label: str) -> int:
     if value <= 0:
         raise ValueError(f"{label} must be greater than zero.")
@@ -68,6 +75,10 @@ def _normalize_request(payload: GenerateRequest) -> GenerateRequest:
     steps = payload.steps or SETTINGS.default_steps
     guidance_scale = payload.guidance_scale if payload.guidance_scale is not None else SETTINGS.default_guidance_scale
     strength = payload.strength if payload.strength is not None else SETTINGS.default_strength
+    lora_path = (payload.lora_path or "").strip() or None
+    lora_scale = payload.lora_scale if lora_path is not None else None
+    if lora_path is not None and lora_scale is None:
+        lora_scale = 1.0
 
     if steps <= 0:
         raise ValueError("steps must be greater than zero.")
@@ -77,6 +88,8 @@ def _normalize_request(payload: GenerateRequest) -> GenerateRequest:
         raise ValueError("Current runtime supports txt2img only.")
     if not 0.0 < strength <= 1.0:
         raise ValueError("strength must be between 0 and 1.")
+    if lora_scale is not None and lora_scale < 0.0:
+        raise ValueError("lora_scale must be zero or greater.")
 
     return payload.model_copy(
         update={
@@ -86,11 +99,22 @@ def _normalize_request(payload: GenerateRequest) -> GenerateRequest:
             "guidance_scale": guidance_scale,
             "strength": strength,
             "negative_prompt": payload.negative_prompt or SETTINGS.default_negative_prompt,
+            "lora_path": lora_path,
+            "lora_scale": lora_scale,
         }
     )
 
 
 def _generate(payload: GenerateRequest) -> GenerateResponse:
+    started_at = perf_counter()
+    _log_stage(
+        "generate.begin",
+        mode=payload.mode,
+        steps=payload.steps,
+        width=payload.width,
+        height=payload.height,
+        lora=bool(payload.lora_path),
+    )
     progress_update(
         status="processing",
         stage="loading_model",
@@ -110,6 +134,7 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
             progress_total=3,
             progress_percent=33.0,
         )
+        _log_stage("txt2img.call.begin")
         image, model_id = MODEL_MANAGER.generate_text_to_image(
             prompt=payload.prompt,
             negative_prompt=payload.negative_prompt,
@@ -119,7 +144,10 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
             guidance_scale=payload.guidance_scale,
             seed=payload.seed,
             model_id=payload.model_id,
+            lora_path=payload.lora_path,
+            lora_scale=payload.lora_scale,
         )
+        _log_stage("txt2img.call.end", elapsed=f"{perf_counter() - started_at:.2f}s")
     else:
         init_image = _decode_base64_image(payload.image or "")
         init_image = _resize_init_image(init_image, payload.width, payload.height)
@@ -131,6 +159,7 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
             progress_total=3,
             progress_percent=33.0,
         )
+        _log_stage("img2img.call.begin")
         image, model_id = MODEL_MANAGER.generate_image_to_image(
             prompt=payload.prompt,
             negative_prompt=payload.negative_prompt,
@@ -142,7 +171,10 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
             strength=payload.strength,
             seed=payload.seed,
             model_id=payload.model_id,
+            lora_path=payload.lora_path,
+            lora_scale=payload.lora_scale,
         )
+        _log_stage("img2img.call.end", elapsed=f"{perf_counter() - started_at:.2f}s")
 
     progress_update(
         status="processing",
@@ -168,14 +200,23 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
         "steps": payload.steps,
         "guidance_scale": payload.guidance_scale,
         "seed": payload.seed,
+        "lora_path": payload.lora_path,
+        "lora_scale": payload.lora_scale,
         "strength": payload.strength,
     }
+    _log_stage("save.begin", output_dir=SETTINGS.output_dir)
     output_path, metadata_path = save_image_and_metadata(
         image,
         SETTINGS.output_dir,
         mode=payload.mode,
         prompt=payload.prompt,
         metadata=metadata,
+    )
+    _log_stage(
+        "save.end",
+        output_path=output_path,
+        metadata_path=metadata_path,
+        elapsed=f"{perf_counter() - started_at:.2f}s",
     )
 
     progress_update(
@@ -191,6 +232,7 @@ def _generate(payload: GenerateRequest) -> GenerateResponse:
     progress_reset()
     progress_update(last_output_path=str(output_path), model_id=model_id)
 
+    _log_stage("generate.end", elapsed=f"{perf_counter() - started_at:.2f}s")
     return GenerateResponse(
         status="ok",
         worker_id=WORKER_ID,
@@ -224,6 +266,7 @@ async def server_info():
             "max_height": SETTINGS.max_height,
             "runtime": MODEL_MANAGER.loaded_runtime or SETTINGS.runtime,
             "configured_runtime": SETTINGS.runtime,
+            "supports_lora": MODEL_MANAGER.supports_lora(),
             "nunchaku_rank": SETTINGS.nunchaku_rank,
             "nunchaku_precision": SETTINGS.nunchaku_precision,
             **MODEL_MANAGER.loaded_runtime_extra,
@@ -241,6 +284,7 @@ async def generate(payload: GenerateRequest):
     try:
         normalized = _normalize_request(payload)
     except ValueError as exc:
+        print(f"[nymphs:zimage:error] normalize.value_error detail={exc}", flush=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
@@ -248,6 +292,7 @@ async def generate(payload: GenerateRequest):
     except HTTPException:
         raise
     except ValueError as exc:
+        print(f"[nymphs:zimage:error] generate.value_error detail={exc}", flush=True)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         detail = str(exc) or exc.__class__.__name__
